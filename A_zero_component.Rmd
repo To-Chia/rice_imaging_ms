@@ -1,0 +1,191 @@
+---
+title: "Predawn assimilation_plsr"
+date: "`r Sys.Date ()`"
+output: pdf_document
+---
+
+```{r, setup, include=FALSE, cache = F}
+knitr::opts_chunk$set(echo = T)
+knitr::opts_knit$set(root.dir = '/Users/ting15/Dropbox/Ting_Wang/rice_imaging_ms')
+#knitr::opts_knit$set(root.dir = 'C:/Users/rebec/Dropbox/Ting_Wang/rice_imaging_ms')
+```
+
+```{r, echo = F, include=FALSE}
+rm(list = ls())
+## Load package 
+list.of.packages <- c("dplyr", "reshape2", "ggplot2", "pls", "scales", "kableExtra", "ggpubr", "gridExtra", "CORElearn", "spectratrait")
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+# Aim  
+
+Predict predawn assimilation (A, $\mu mol m^{-2} s^{-1}$, *n* = 94, N1 = N2 = 47) with hyperspectral data.  
+
+# Methods  
+
+1. Use RReliefFexpRank algorithm to select the top 300 wavelengths that were important for A.   
+2. Conduct PCA on the reflectances of the selected wavelengths to concentrate the variance.  
+3. Build a PLSR with PCs' scores as input variables.  
+
+```{r, include=FALSE}
+## Load datasets  
+#HSI: Weekly ID-based data
+phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
+HSI_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W6.csv', header = T, sep = ',', dec = '.')
+inVar <- "A"
+file_path <- "./results/relieF_pca_plsr/A/"
+
+```
+
+```{r, echo = F, fig.align='center', fig.width = 4, fig.height = 4}
+trait <- phyraw %>%
+  select("ID", "A", "Treatment") %>%
+  na.omit() 
+#table(trait$Treatment) #N1:47, N2:47
+```
+
+## Step 1: Feature selection    
+
+```{r, echo=FALSE, fig.align='center', fig.width = 10, fig.height = 4}
+HSI <- HSI_meta[which(HSI_meta$ID %in% trait$ID), -c(746:766)] #drop columns with wv > 2500 and meta data 
+wv_trait <- merge(HSI, subset(trait, select = -Treatment), by = "ID")
+wv_trait_2 <- wv_trait[ ,-1]
+
+wv_trait_expRank <- attrEval(A ~., wv_trait_2, estimator = "RReliefFexpRank", ReliefIterations = 94*50) 
+wv_trait_expRank_long <- data.frame(value = unname(wv_trait_expRank), 
+                                       wv = as.numeric(gsub("_", ".", sub("...", "",  names(wv_trait_expRank)))))
+wv_trait_expRank_order <- wv_trait_expRank_long[order(wv_trait_expRank_long$value, decreasing = T)[1:300], ] 
+wv_trait_expRank_export <- wv_trait_expRank_long[order(wv_trait_expRank_long$value, decreasing = T), ] 
+#write.csv(file = paste0(file_path, "wv_trait_expRank.csv"), x= wv_trait_expRank_export, row.names = F)
+critical_value <- wv_trait_expRank_long[order(wv_trait_expRank_long$value, decreasing = T)[300], 1]
+wv_trait_expRank_long$select <- ifelse(wv_trait_expRank_long$value > critical_value, "Y", "N")
+
+col_attr <- c("Y"="red", "N"="darkgray")
+wv_trait_expRank_plot <- ggplot() +
+  geom_line(aes(x = wv, y = value), data = wv_trait_expRank_long, col = "black", size = 0.5) +
+  scale_x_continuous(breaks = seq(400, 2500, by = 400), labels = seq(400, 2500, by = 400)) +
+  geom_point(aes(x = wv, y = value, col = select), data = wv_trait_expRank_long, size = .7,
+             show.legend = F) +
+  scale_color_manual(values=col_attr) +
+  labs(x= "\n Wavelength (nm)", y = "Attribute values") +                     
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),
+    axis.text = element_text(size = 25, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+        )
+wv_trait_expRank_plot
+```
+Figure 1: Attribute values of HSI data on Week 6 for A. Wavelengths with the top 300 attribute values are considered as important (red).  
+
+```{r, include = FALSE}
+HSI_feature <- HSI[ , which(as.numeric(gsub("_", ".", sub("...", "",  names(HSI)))) %in% wv_trait_expRank_order$wv)]
+HSI_feature2 <- data.frame(ID = HSI$ID, HSI_feature)
+HSI_feature2_long <- melt(HSI_feature2, id = "ID")
+HSI_feature2_long$variable.num <- as.numeric(gsub("_", ".", sub("...", "", HSI_feature2_long$variable)))
+```
+
+```{r, echo = F, eval = F, fig.align='center', fig.width = 10, fig.height = 4}
+HSI_p <- ggplot(aes(x=variable.num, y = value, col = ID), data = HSI_feature2_long) +  
+  geom_point(size = 0.1) + 
+  scale_x_continuous(breaks = seq(400, 2500, by = 200), labels = seq(400, 2500, by = 200)) +
+  labs(x = "Wavelength (nm)", y = "Reflectance (%)") + 
+  theme_bw() +
+ theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none")
+HSI_p
+#ggsave(filename = "./results/plsr/A/A_sel_300wv.png", plot = HSI_p, device="png", width = 30, height = 12, units = "cm", dpi = 300)
+
+```
+
+## Step 2: PCA  
+The hyperspectral data were not scaled.  
+
+```{r, include=FALSE}
+HSI_pca <- prcomp(HSI_feature)
+HSI_loadings <- HSI_pca$rotation
+HSI_scores <- HSI_pca$x
+HSI_sd <- HSI_pca$sdev
+HSI_var <- (HSI_pca$sdev)^2
+HSI_var_percent <- HSI_var/sum(HSI_var)*100
+sum(HSI_var_percent[1:2])
+```
+
+```{r, echo = F, warnings = F, fig.align='center', fig.width = 4, fig.height = 4}
+#png(filename = "./results/plsr/A/HSI_A_var_percent.png", bg = "white", width = 10, height = 10, units = "in", res = 300)
+barplot(HSI_var_percent, xlab='PC', ylab='Percent Variance', names.arg=1:length(HSI_var_percent), las=1, ylim=c(0, max(HSI_var_percent)), col='gray')
+#dev.off()
+```
+Figure 2: PCA scree plot. The first two PCs account for 90.0% of the variance. The top ten loadings in PC1 are wavelengths from 711 to 722 nm. The top ten loadings in PC2 are wavelengths from 1196 to 1349 nm with one wavelength at 758 nm.   
+```{r, include=FALSE}
+HSI_PC1_loadings <- HSI_loadings[order((HSI_loadings[ ,1])^2, decreasing = T), 1]
+HSI_PC2_loadings <- HSI_loadings[order((HSI_loadings[ ,2])^2, decreasing = T), 2]
+HSI_top_loadings <- data.frame(Trait = "predawn_QY", PC = rep(c("PC1", "PC2"), each = 10), 
+                    ID = c(as.numeric(gsub("_", ".", sub("...", "", names(HSI_PC1_loadings[1:10])))), 
+                           as.numeric(gsub("_", ".", sub("...", "", names(HSI_PC2_loadings[1:10]))))
+                           ),
+                    loadings = c(as.numeric(HSI_PC1_loadings[1:10]),                   
+                                 as.numeric(HSI_PC2_loadings[1:10]))
+                    )
+HSI_top_loadings_2 <- HSI_top_loadings[!duplicated(HSI_top_loadings[ ,c('ID')]), ]
+#write.csv(file = "./results/plsr/A/HSI_A_top10_loadings.csv", x= HSI_top_loadings_2, row.names = F)
+```
+
+## Step 3: plsr  
+
+```{r, include=FALSE}
+`%notin%` <- Negate(`%in%`)
+pls::pls.options(plsralg = "oscorespls")
+pls::pls.options("plsralg")
+opar <- par(no.readonly = T)
+```
+1. Prepare calibration and evaluation datasets  
+The data were first grouped by treatments. Then, 80% of the data in each treatment were sampled for the calibration dataset.  
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+HSI_I <- as.matrix(HSI_scores)
+plsr_data <- data.frame(trait, inputs_scores = I(HSI_I))
+set.seed(333)
+prop <- 0.8
+
+cal.plsr.data <- plsr_data %>% 
+        slice(sample(1:n(), prop*n())) %>% 
+        data.frame()
+val.plsr.data <- plsr_data[!plsr_data$ID %in% cal.plsr.data$ID,]
+print(paste("Cal observations: ",dim(cal.plsr.data)[1],sep="")) #75
+print(paste("Val observations: ",dim(val.plsr.data)[1],sep="")) #19
+
+cal_hist_plot <- qplot(cal.plsr.data$A, geom="histogram", bins =12,
+                       main = "Cal. (n = 75)",
+                       xlab = expression("A ("~mu*mol*m^-2*s^-1~")"), ylab = "Count", 
+                       fill=I("#0072B2"), col=I("black")) + theme_bw(base_size = 18)
+
+val_hist_plot <- qplot(val.plsr.data$A, geom="histogram", bins =5,
+                       main = "Val. (n = 19)",
+                       xlab = expression("A ("~mu*mol*m^-2*s^-1~")"), ylab = "Count",
+                       fill=I("#0072B2"),col=I("black")) + theme_bw(base_size = 18)
+#val_hist_plot
+cal_val_histograms <- grid.arrange(cal_hist_plot, val_hist_plot, ncol=2)
+#ggsave(filename = "./results/plsr/A/cal_val_A_histograms.png", plot = cal_val_histograms, device="png", width = 30, height = 12, units = "cm", dpi = 300)
+#write.csv(cal.plsr.data, file= "./results/plsr/A/A_Cal_PLSR_Dataset.csv", row.names=FALSE)
+#write.csv(val.plsr.data, file="./results/plsr/A/A_Val_PLSR_Dataset.csv", row.names=FALSE)
+
+```
+Figure 3: Frequency distributions of A ($\mu mol m^{-2} s^{-1}$) in the calibration (left, *n* = 75) and evaluation (right, *n* = 19) datasets. 
+\newpage  
+
+2. Fit plsr model    
+Model: A = Scores of PCs. The scores of the PCs were not scaled. 
+The model was cross-validated with leave-one-out method.  
+
+```{r, echo = F, fig.align='center', fig.width = 7, fig.height = 5}
+plsr.ini <- plsr(A~inputs_scores, scale=FALSE,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data)
+#png(filename = "./results/plsr/A/A_nComps.png", bg = "white", width = 10, height = 10, units = "in", res = 300)
+par(mar = c(6, 7, 4, 2), mgp = c(5, 2, 0))
+nComp <- selectNcomp(plsr.ini, method = "onesigma", plot = T,  
+                     cex.axis = 2, cex.lab = 2, xlim = c(0, 15), ylim = c(0.4, 0.9),
+                     font.lab = 2, font = 2)
+#dev.off()
+```
+Figure 4: Root mean square error of prediction (RMSEP) as a function of model component number in PLSR models. The dotted black vertical line is the number of components that has lowest RMSEP. The vertical long-dashed blue line indicates the number of components suggested. The points and error bars are the means and standard errors of RMSEP in the cross validation, respectively.  
