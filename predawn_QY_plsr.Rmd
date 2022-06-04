@@ -1,0 +1,323 @@
+---
+title: "pre-dawn_QY_reliefF_PCA_plsr"
+date: "`r Sys.Date ()`"
+output: 
+ pdf_document: default
+---
+
+```{r, setup, include=FALSE, cache = F}
+# Set directory
+knitr::opts_chunk$set(echo = T)
+knitr::opts_knit$set(root.dir = '/Users/ting15/Dropbox/Ting_Wang/rice_imaging_ms')
+# Readers please set their own directory.
+```
+
+```{r, echo = F, include=FALSE}
+rm(list = ls())
+## Load packages 
+list.of.packages <- c("dplyr", "reshape2", "ggplot2", "pls", "scales", "kableExtra", "ggpubr", "gridExtra", "CORElearn", "spectratrait")
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+# Aim  
+
+Predict pr-edawn QY (pQY, *n* = 94, N1=N2=47) with hyperspectral imaging data (HSI data).  
+
+# Methods  
+
+1. Use RReliefFexpRank algorithm to select the top 300 wavelengths that were important for pQY.  
+2. Conduct PCA on the reflectances of the selected wavelengths to concentrate the variance.  
+3. Build a PLSR model with PCs' scores as input variables.  
+
+```{r, include=FALSE}
+phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
+ref_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W10.csv', header = T, sep = ',', dec = '.')
+file_path <- "./results/relieF_pca_plsr/predawn_QY/"
+```
+
+```{r, echo = F, results = F, fig.align='center', fig.width = 4, fig.height = 4}
+trait <- phyraw %>%
+  select("ID", "pQY", "Treatment") %>%
+  na.omit()
+#table(trait$Treatment)
+```
+
+## Step 1: Feature selection    
+
+```{r, echo=FALSE, fig.align='center', fig.width = 10, fig.height = 4}
+ref <- ref_meta[which(ref_meta$ID %in% trait$ID), -c(746:766)] #drop columns with wv > 2500 and meta data 
+ref_trait <- merge(ref, subset(trait, select = -Treatment), by = "ID")
+ref_trait_data <- ref_trait[ ,-1]
+
+ref_trait_expRank <- attrEval(pQY ~., ref_trait_data, estimator = "RReliefFexpRank", ReliefIterations = 94*50) 
+ref_trait_expRank_long <- data.frame(value = unname(ref_trait_expRank), 
+                                       wv = as.numeric(gsub("_", ".", sub("...", "",  names(ref_trait_expRank)))))
+ref_trait_expRank_order <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[1:300], ] 
+critical_value <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[300], 1]
+ref_trait_expRank_export <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T), ] 
+
+ref_trait_expRank_long$select <- ifelse(ref_trait_expRank_long$value > critical_value, "Y", "N")
+col_attr <- c("Y"="red", "N"="darkgray")
+
+ref_trait_expRank_plot <- ggplot() +
+  geom_line(aes(x = wv, y = value), data = ref_trait_expRank_long, col = "black", size = 0.5) +
+  scale_x_continuous(breaks = seq(400, 2500, by = 400), labels = seq(400, 2500, by = 400)) +
+  geom_point(aes(x = wv, y = value, col = select), data = ref_trait_expRank_long, size = .7,
+             show.legend = F) +
+  scale_color_manual(values=col_attr) +
+  labs(x= "\n Wavelength (nm)", y = "Attribute values") +                     
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),
+    axis.text = element_text(size = 25, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+        )
+ref_trait_expRank_plot
+```
+Figure 1: Attribute values of HSI data on Week 10 for pQY. Wavelengths with the top 300 attribute values are considered as important (red).  
+```{r, echo=FALSE, eval = F, fig.align='center', fig.width = 10, fig.height = 4}
+ref_trait_expRank_plot
+ggsave(filename = paste0(file_path, "predawn_QY_expRank.png"), plot = ref_trait_expRank_plot, device="png", width = 30, height = 12, units = "cm", dpi = 300)
+write.csv(file = paste0(file_path, "reflectanc_pQY_expRank_export.csv"), x= ref_trait_expRank_export, row.names = F)
+```
+
+```{r, include = FALSE}
+ref_feature <- ref[ , which(as.numeric(gsub("_", ".", sub("...", "",  names(ref)))) %in% ref_trait_expRank_order$wv)]
+ref_feature_ID <- data.frame(ID = ref$ID, ref_feature)
+ref_feature_long <- melt(ref_feature_ID, id = "ID")
+ref_feature_long$variable.num <- as.numeric(gsub("_", ".", sub("...", "", ref_feature_long$variable)))
+```
+\newpage  
+
+## Step 2: PCA  
+The HSI data were not scaled.  
+
+```{r, include=FALSE}
+ref_pca <- prcomp(ref_feature)
+ref_loadings <- ref_pca$rotation
+ref_scores <- ref_pca$x
+ref_sd <- ref_pca$sdev
+ref_var <- (ref_pca$sdev)^2
+ref_var_percent <- ref_var/sum(ref_var)*100
+sum(ref_var_percent[1:2]) #91.8%
+```
+
+```{r, echo = F, warnings = F, fig.align='center', fig.width = 4, fig.height = 4}
+#png(filename = "./results/plsr/predawn_QY/HSI_predawn_QY_var_percent.png", bg = "white", width = 10, height = 10, units = "in", res = 300)
+barplot(ref_var_percent, xlab='PC', ylab='Percent Variance', names.arg=1:length(ref_var_percent), las=1, ylim=c(0, max(ref_var_percent)), col='gray')
+#dev.off()
+```
+Figure 2: PCA scree plot. The first two PCs account for 91.8% of the variance. The top ten loadings in PC1 are wavelengths from 717 to 724 nm and the top ten loadings in PC2 are located in the ranges of 756 to 762 nm and 981 to 1015 nm. 
+```{r, eval = F, include=FALSE}
+#record the loadings
+ref_PC1_loadings <- ref_loadings[order((ref_loadings[ ,1])^2, decreasing = T), 1]
+ref_PC2_loadings <- ref_loadings[order((ref_loadings[ ,2])^2, decreasing = T), 2]
+ref_top_loadings <- data.frame(Trait = "pQY", PC = rep(c("PC1", "PC2"), each = 10), 
+                    ID = c(as.numeric(gsub("_", ".", sub("...", "", names(ref_PC1_loadings[1:10])))), 
+                           as.numeric(gsub("_", ".", sub("...", "", names(ref_PC2_loadings[1:10]))))
+                           ),
+                    loadings = c(as.numeric(ref_PC1_loadings[1:10]),                   
+                                 as.numeric(ref_PC2_loadings[1:10]))
+                    )
+ref_top_loadings_unique <- ref_top_loadings[!duplicated(ref_top_loadings[ ,c('ID')]), ]
+write.csv(file = "./results/plsr/predawn_QY/HSI_predawn_QY_top10_loadings.csv", x= HSI_top_loadings_unique, row.names = F)
+```
+\newpage  
+
+## Step 3: plsr  
+
+```{r, include=FALSE}
+`%notin%` <- Negate(`%in%`)
+pls::pls.options(plsralg = "oscorespls")
+pls::pls.options("plsralg")
+opar <- par(no.readonly = T)
+inVar <- "pQY"
+```
+1. Prepare calibration and validation datasets  
+The data were first grouped by treatmentS. Then, 80% of the data in each treatment were sampled for the calibration dataset.
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+ref_I <- as.matrix(ref_scores)
+plsr_data <- data.frame(trait, inputs_scores = I(ref_I))
+set.seed(671)
+prop <- 0.8
+group_variables <- c("Treatment")
+cal.plsr.data <- plsr_data %>% 
+        group_by_at(vars(all_of(group_variables))) %>%
+        slice(sample(1:n(), prop*n())) %>% 
+        data.frame()
+val.plsr.data <- plsr_data[!plsr_data$ID %in% cal.plsr.data$ID,]
+print(paste("Cal observations: ",dim(cal.plsr.data)[1],sep="")) #74
+print(paste("Val observations: ",dim(val.plsr.data)[1],sep="")) #20
+
+cal_hist_plot <- qplot(cal.plsr.data$pQY, geom="histogram", bins =12,
+                       main = "Cal. (n = 74)", xlab = "pQY", ylab = "Count", 
+                       fill=I("#0072B2"), col=I("black")) + 
+                       theme_bw(base_size = 18)
+
+val_hist_plot <- qplot(val.plsr.data$pQY, geom="histogram", bins =3,
+                       main = "Val. (n = 20)", xlab = "pQY", ylab = "Count", 
+                       fill=I("#0072B2"), col=I("black")) + 
+                       theme_bw(base_size = 18)
+cal_val_histograms <- grid.arrange(cal_hist_plot, val_hist_plot, ncol=2)
+```
+Figure 3: Frequency distributions of pQY in the calibration (left, *n* = 74) and validation (right, *n* = 20) datasets.  
+```{r, echo=FALSE, eval=FALSE, fig.align = "center", fig.width = 5, fig.height = 5}
+cal_hist_plot 
+ggsave(filename = paste0(file_path, "cal_predawn_QY_histograms.png"), plot = cal_hist_plot, 
+       device="png", width = 12, height = 12, units = "cm", dpi = 300)
+val_hist_plot 
+ggsave(filename = paste0(file_path, "val_predawn_QY_histograms.png"), plot = val_hist_plot, 
+       device="png", width = 12, height = 12, units = "cm", dpi = 300)
+write.csv(cal.plsr.data, file= paste0(file_path, "predawn_QY_Cal_PLSR_Dataset.csv"), row.names=FALSE)
+write.csv(val.plsr.data, file= paste0(file_path, "predawn_QY_Val_PLSR_Dataset.csv"), row.names=FALSE)
+```
+\newpage  
+
+2. Fit the plsr model    
+Model: pQY = Scores of PCs. The scores of the PCs were not scaled. 
+The model was cross-validated with leave-one-out method.  
+```{r, echo = F, fig.align='center', fig.width = 7, fig.height = 5}
+plsr.ini <- plsr(pQY~inputs_scores, scale=FALSE,
+                 validation="LOO", trace=FALSE, data=cal.plsr.data)
+#png(filename = paste0(file_path, "predawn_QY_nComps.png"), bg = "white", width = 5, height = 5, units = "in", res = 400)
+par(mar = c(6, 7, 4, 2), mgp = c(5, 2, 0))
+nComp <- selectNcomp(plsr.ini, method = "onesigma", plot = T, 
+                     cex.axis = 2, cex.lab = 2, xlim = c(0, 15), ylim = c(0.018, 0.035),
+                     font.lab = 2, font = 2)
+#dev.off()
+```
+Figure 4: Root mean square error of prediction (RMSEP) as a function of model component number in PLSR models. The dotted black vertical line is the number of components that has the lowest RMSEP. The vertical long-dashed blue line indicates the suggested number of components. The points and error bars are the means and standard errors of RMSEP in the cross validation, respectively.  
+\newpage  
+3. Evaluate model performance  
+ 
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+plsr.out <- plsr(pQY~inputs_scores, scale=FALSE, ncomp = nComp,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data)
+fit <- plsr.out$fitted.values[,,nComp]
+#calibration
+cal.plsr.output <- data.frame(measured = cal.plsr.data$pQY,
+                              PLSR_Predicted=fit,
+                              PLSR_CV_Predicted=as.vector(plsr.out$validation$pred[,,nComp]))
+cal.plsr.output <- cal.plsr.output %>%
+  mutate(PLSR_CV_Residuals = PLSR_CV_Predicted-measured)
+
+cal.R2 <- round(pls::R2(plsr.out,intercept=F)[[1]][nComp],5)
+cal.RMSEP <- round(sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2)),5)
+cal.NRMSEP <- round(sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2))/sd(cal.plsr.output$measured), 5)
+
+
+val.plsr.output <- data.frame(measured = val.plsr.data$pQY,
+                              PLSR_Predicted=as.vector(predict(plsr.out, 
+                                                               newdata = val.plsr.data, 
+                                                               ncomp=nComp, 
+                                                               type="response")[,,1]))
+val.plsr.output <- val.plsr.output %>%
+  mutate(PLSR_Residuals = PLSR_Predicted-measured)
+
+val.R2 <- round(pls::R2(plsr.out,newdata=val.plsr.data,intercept=F)[[1]][nComp],5)
+val.RMSEP <- round(sqrt(mean(val.plsr.output$PLSR_Residuals^2)),5)
+val.NRMSEP <- round(sqrt(mean(val.plsr.output$PLSR_Residuals^2))/sd(val.plsr.output$measured), 5)
+
+rng <- range(cal.plsr.output$measured, cal.plsr.output$PLSR_CV_Predicted,
+             val.plsr.output$measured, val.plsr.output$PLSR_Predicted)
+text_xloc <- seq(round(rng[1], 2), round(rng[2], 2), length = 5)[4]
+text_y_R2 <- (round(rng[2], 2)-round(rng[1], 2))/10*3+round(rng[1], 2)
+text_y_RMSEP <- (round(rng[2], 2)-round(rng[1], 2))/10*2+round(rng[1], 2)
+text_y_NRMSEP <- (round(rng[2], 2)-round(rng[1], 2))/10*1+round(rng[1], 2)
+
+cal_scatter_plot <- ggplot(cal.plsr.output, aes(x=measured, y=PLSR_CV_Predicted)) + 
+  theme_bw() + geom_point() + 
+  geom_abline(intercept = 0, slope = 1, color="dark grey", linetype="dashed", size=1.5) +
+  geom_smooth(method = lm, se = F, formula = y ~ x) +
+  scale_x_continuous(breaks = seq(rng[1], rng[2], length = 5), 
+                     labels = round(seq(rng[1], rng[2], length = 5), 2), 
+                     limits = c(rng[1], rng[2]))+
+  scale_y_continuous(breaks = seq(rng[1], rng[2], length = 5), 
+                     labels = round(seq(rng[1], rng[2], length = 5), 2), 
+                     limits = c(rng[1], rng[2]))+
+  labs(x="\n Measured: pQY",
+       y="Predicted: pQY") +
+  theme(axis.text=element_text(size=25, face = "bold"), legend.position="none",
+        axis.title=element_text(size=25, face = "bold"), 
+        axis.text.x = element_text(angle = 0,vjust = 0.5, hjust = 0.6)) + 
+  annotate("text", size = 8, 
+           x= text_xloc, y = c(text_y_R2, text_y_RMSEP, text_y_NRMSEP), parse = TRUE, 
+           label = c(paste("R^{2} == ", round(cal.R2, 2)), paste("RMSEP ==", round(cal.RMSEP, 2)), paste("NRMSEP ==", round(cal.NRMSEP, 2))))+
+  annotate("text", x = 0.74, y = 0.84, parse = T, label = "Cal. (italic(n) == 74)", size = 8)
+```
+
+```{r, echo=FALSE, eval=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+cal_scatter_plot
+ggsave(filename = paste0(file_path, "pQY_Cal_lm_Scatterplot.png"), plot = cal_scatter_plot, device="png", width = 15, height = 15, units = "cm", dpi = 400)
+```
+
+```{r, echo=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+cal_resid_histogram <- ggplot(cal.plsr.output, aes(x=PLSR_CV_Residuals)) +
+  geom_histogram(alpha=.5, position="identity", bins = 5, col="black") + 
+  geom_vline(xintercept = 0, color="black", 
+             linetype="dashed", size=1) + 
+  theme_bw(base_size = 18) + 
+  theme(legend.position="none",
+        axis.text.x = element_text(angle = 0,vjust = 0.5))+
+ labs(title = "Cal. (n = 74)", x = "CV residuals", y = "Count")
+```
+
+```{r, echo=FALSE, eval=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+cal_resid_histogram
+ggsave(filename = paste0(file_path, "cal_resid_histogram.png"), plot = cal_resid_histogram, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+```
+
+```{r, echo=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+val_scatter_plot <- ggplot(val.plsr.output, aes(x=measured, y=PLSR_Predicted)) + 
+  theme_bw() + geom_point() + geom_abline(intercept = 0, slope = 1, color="dark grey", 
+                                          linetype="dashed", size=1.5) +
+  geom_smooth(method = lm, se = F, formula = y ~ x) +
+  scale_x_continuous(breaks = seq(rng[1], rng[2], length = 5), 
+                     labels = round(seq(rng[1], rng[2], length = 5), 2), 
+                     limits = c(rng[1], rng[2]))+
+  scale_y_continuous(breaks = seq(rng[1], rng[2], length = 5), 
+                     labels = round(seq(rng[1], rng[2], length = 5), 2), 
+                     limits = c(rng[1], rng[2]))+
+  labs(x="\n Measured: pQY",
+       y="Predicted: pQY") +
+  theme(axis.text=element_text(size=25, face = "bold"), legend.position="none",
+        axis.title=element_text(size=25, face = "bold"), 
+        axis.text.x = element_text(angle = 0,vjust = 0.5, hjust = 0.6))+
+  annotate("text", size = 8, x= text_xloc, y = c(text_y_R2, text_y_RMSEP, text_y_NRMSEP), parse = TRUE, 
+           label = c(paste("R^{2} == ", round(val.R2, 2)), paste("RMSEP ==", round(val.RMSEP, 2)), paste("NRMSEP ==", round(val.NRMSEP, 2))))+
+  annotate("text", x = 0.74, y = 0.84, parse = T, label = "Val. (italic(n) == 20)", size = 8)
+```
+
+```{r, echo=FALSE, eval=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+val_scatter_plot
+ggsave(filename = paste0(file_path, "pQY_Val_lm_Scatterplot.png"), plot = val_scatter_plot, device="png", width = 15, height = 15, units = "cm", dpi = 400)
+```
+
+```{r, echo=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+val_resid_histogram <- ggplot(val.plsr.output, aes(x=PLSR_Residuals)) +
+  geom_histogram(alpha=.5, position="identity", bins = 5, col="black") + 
+  geom_vline(xintercept = 0, color="black", 
+             linetype="dashed", size=1) + theme_bw(base_size = 18) + 
+  theme(legend.position="none",
+        axis.text.x = element_text(angle = 0,vjust = 0.5, hjust = 0.6))+
+ labs(title = "Val. (n = 20)", x = "Residuals", y = "Count")
+```
+
+```{r, echo=FALSE, eval=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+val_resid_histogram
+ggsave(filename = paste0(file_path, "val_resid_histogram.png"), plot = val_resid_histogram, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, fig.align='center'}
+scatterplots <- grid.arrange(cal_scatter_plot, val_scatter_plot, ncol = 2)
+```
+Figure 5: Cross-validated values versus measured values (left, *n* = 74) and external validation values versus measured values (right, *n* = 20) of pQY
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+histplots <-  grid.arrange(cal_resid_histogram, val_resid_histogram, ncol=2)
+```
+Figure 6: Residuals from the cross-validated values versus measured values (left, *n* = 74) and residuals from the external validation values versus measured values (right, *n* = 20) of pQY 
+
+```{r, echo=FALSE, eval=FALSE}  
+ggsave(filename = paste0(file_path, "predawn_QY_Cal_Val_Scatterplots.png"), plot = scatterplots, device="png", width = 32, height = 15, units = "cm", dpi = 300)
+ggsave(filename = paste0(file_path, "predawn_QY_Cal_Val_Residualsplots.png"), plot = histplots, device="png", width = 32, height = 15, units = "cm", dpi = 300)
+```
