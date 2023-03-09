@@ -1,0 +1,401 @@
+---
+title: "N_reliefF_plsr"
+date: "`r Sys.Date ()`"
+output:
+  pdf_document: default
+---
+
+```{r, setup, include=FALSE, cache = F}
+knitr::opts_chunk$set(echo = T)
+knitr::opts_knit$set(root.dir = '/Users/ting15/Dropbox/Ting_Wang/rice_imaging_ms')
+#knitr::opts_knit$set(root.dir = 'C:/Users/rebec/Dropbox/Ting_Wang/rice_imaging_ms')
+```
+
+```{r, echo = F, include=FALSE}
+rm(list = ls())
+## Load package 
+list.of.packages <- c("dplyr", "reshape2", "ggplot2", "pls", "scales", "kableExtra", "ggpubr", "gridExtra", "CORElearn", "spectratrait")
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+# Aim  
+
+Quantify leaf-level nitrogen (%, N) at mid-tillering stage with hyperspectral imaging data (HSI data).    
+
+# Methods  
+
+1. Use RReliefFexpRank algorithm to select 300 wavelengths which had the top attributes values for PLSR modeling. These wavelengths were referred to as $W_{PLSR}$.    
+2. Build a PLSR model with $W_{PLSR}$ as input and N as output.  
+
+```{r import data, include=FALSE}
+phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
+ref_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W9.csv', header = T, sep = ',', dec = '.')
+inVar <- "N"
+file_path <- "./results/reliefF_plsr/Nitrogen/"
+```
+
+```{r select nitrogen as trait, echo = F, fig.align='center', fig.width = 4, fig.height = 4}
+trait <- phyraw %>%
+  select("ID", all_of(inVar), "Treatment") %>%
+  na.omit() 
+``` 
+
+## Step 1: Feature selection    
+
+```{r feature selection, echo=FALSE, fig.align='center', fig.width = 10, fig.height = 5}
+ref <- ref_meta[which(ref_meta$ID %in% trait$ID), -c(746:766)] #drop columns with wv > 2500 nm and meta data 
+ref_trait <- merge(ref, subset(trait, select = -Treatment), by = "ID")
+ref_trait_num <- ref_trait[ ,-1] # drop ID
+
+ref_trait_expRank <- attrEval(N ~., ref_trait_num, estimator = "RReliefFexpRank", ReliefIterations = nrow(trait)*50)
+ref_trait_expRank_long <- data.frame(value = unname(ref_trait_expRank), 
+                                       wv = as.numeric(gsub("_", ".", sub("...", "",  names(ref_trait_expRank)))))
+
+critical_value <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[300], 1]
+ref_trait_expRank_long$select <- ifelse(ref_trait_expRank_long$value > critical_value, "Y", "N")
+
+ref_trait_expRank_order <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[1:300], ] 
+ref_trait_expRank_export <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T), ] 
+
+col_attr <- c("Y"="red", "N"="darkgray")
+ref_trait_expRank_plot <- ggplot() +
+  geom_line(aes(x = wv, y = value), data = ref_trait_expRank_long, col = "black", size = 0.5) +
+  scale_x_continuous(breaks = seq(400, 2500, by = 400), labels = seq(400, 2500, by = 400)) +
+  scale_y_continuous(breaks = seq(-0.1, 0.2, by = 0.1), labels = seq(-0.1, 0.2, by = 0.1),
+                     limits = c(-0.13, 0.23)) +
+  geom_point(aes(x = wv, y = value, col = select), data = ref_trait_expRank_long, size = .7,
+             show.legend = F) +
+  scale_color_manual(values=col_attr) +
+  labs(x= "Wavelength (nm)", y = "Attributes values") +                     
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),
+    axis.text = element_text(size = 25, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+        )
+ref_trait_expRank_plot
+```
+Figure 1: Attributes values of HSI data on Week 9 for N (%). Wavelengths with the top 300 attribute values are considered as important (red, $W_{PLSR}$) and are model inputs.  
+```{r annotate aattributes values plot, echo=FALSE, fig.align='center', fig.width = 10, fig.height = 5}
+att_annotate <- ggplot() +
+  geom_line(aes(x = wv, y = value), data = ref_trait_expRank_long, col = "black", size = 0.5) +
+  geom_point(aes(x = wv, y = value, col = select), data = ref_trait_expRank_long, size = .7,
+             show.legend = F) +
+  scale_color_manual(values=col_attr) +
+  scale_x_continuous(breaks = seq(400, 2500, by = 400), labels = seq(400, 2500, by = 400)) +
+  scale_y_continuous(breaks = seq(-0.1, 0.2, by = 0.1), labels = seq(-0.1, 0.2, by = 0.1),
+                     limits = c(-0.13, 0.23)) +
+  geom_vline(xintercept = c(1500, 1960, 2080, 2115, 2230, 2300), col = "gray") + #N-H stretch
+  geom_rect(aes(xmin=480, ymin = 0.15, xmax= 680, ymax = 0.17), #chlorophyll
+               col = "#009E73", fill = rgb(0,0,0,0), size = 1.5) +
+  annotate("text", x = 1000, y = 0.16, label = "Chlorophyll", col = "#009E73", size = 10) + 
+  geom_rect(aes(xmin=680, ymin = 0.18, xmax= 750, ymax = 0.20), #red-edge
+               col = "#CC79A7", fill = rgb(0,0,0,0), size = 1.5) +
+  annotate("text", x = 1000, y = 0.20, label = "Red-edge", col = "#CC79A7", size = 10) + 
+  geom_rect(aes(xmin=1900, ymin = 0.02, xmax= 2100, ymax = 0.11), 
+               col = "#0072B2", fill = rgb(0,0,0,0), size = 1.5) +
+  annotate("text", x = 1800, y = 0.05, parse = T, label = paste("H[2]*O"), col = "#0072B2", size = 10) + 
+  
+  labs(x= "Wavelength (nm)", y = "Attributes values") +                     
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),
+    axis.text = element_text(colour = "black", size = 25, face = "bold"),
+    axis.text.y = element_text(angle = 90, hjust = .03),
+    panel.border = element_rect(colour = "black", fill=NA, size=2),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+        )
+att_annotate
+```
+```{r att anotate output, echo=FALSE, eval = F, fig.align='center', fig.width = 10, fig.height = 4}
+att_annotate
+ggsave(filename = paste0(file_path, "Nitrogen_att_annotate.png"), plot = att_annotate, device="png", width = 30, height = 12, units = "cm", dpi = 400)
+```
+## Step 2: plsr  
+
+Method for pls: Orthogonal scores PLSR  
+
+```{r plsr setting, include=FALSE}
+`%notin%` <- Negate(`%in%`)
+pls::pls.options(plsralg = "oscorespls")
+pls::pls.options("plsralg")
+opar <- par(no.readonly = T)
+```
+1. Prepare calibration and evaluation datasets  
+The data were first grouped by treatment. Then, 80% of the data were sampled for the calibration dataset.
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+ref_select <- as.matrix(ref[ ,names(ref_trait_expRank[ref_trait_expRank >= critical_value])])
+plsr_data <- data.frame(trait, Spectra = I(ref_select))
+set.seed(999)
+prop <- 0.8
+group_variables <- c("Treatment")
+cal.plsr.data <- plsr_data %>% 
+        group_by_at(vars(all_of(group_variables))) %>%
+        slice(sample(1:n(), prop*n())) %>% 
+        data.frame()
+val.plsr.data <- plsr_data[!plsr_data$ID %in% cal.plsr.data$ID,]
+print(paste("Cal observations: ",dim(cal.plsr.data)[1],sep="")) #70
+print(paste("Val observations: ",dim(val.plsr.data)[1],sep="")) #18
+
+#range(trait$N)
+cal_hist_plot <-ggplot(aes(x = N), data = cal.plsr.data) +
+  geom_histogram(binwidth =0.3, fill=I("#0072B2"), col=I("black")) +
+  coord_cartesian(xlim = c(1,4)) +
+  theme_bw(base_size = 18) +
+  labs(x = "N (%)", y = "Count") +
+  ggtitle("Cal. (n = 70)") 
+
+val_hist_plot <- ggplot(aes(x = N), data = val.plsr.data) +
+  geom_histogram(binwidth =0.28, fill=I("#0072B2"), col=I("black")) +
+  coord_cartesian(xlim = c(1,4)) +
+  theme_bw(base_size = 18) +
+  labs(x = "N (%)", y = "Count") +
+  ggtitle("Val. (n = 18)")
+ 
+cal_val_histograms <- ggarrange(cal_hist_plot, val_hist_plot, ncol=2)
+cal_val_histograms 
+```
+Figure 2: Frequency distributions of N (%) in the calibration (left, *n* = 70) and validation (right, *n* = 18) datasets. 
+
+2. Fit a plsr model    
+ 
+The model was cross-validated with leave-one-out method.  
+```{r determine number of components, echo = F, fig.align='center', fig.width = 7, fig.height = 5}
+plsr.ini <- plsr(N~Spectra, scale=FALSE,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data)
+#png(filename = paste0(file_path, "Nitrogen_nComps.png"), bg = "white", width = 7, height = 5, units = "in", res = 400)
+par(mfrow=c(1,1), mar=c(6,7,1,0.5), oma=c(0, 0.1, 0, 0.2), mgp = c(3, 1, 0))
+nComps <- selectNcomp(plsr.ini, method = "onesigma", plot = T, lwd=1.6,
+                      xlim = c(0, 15), ylim = c(0.20, 0.55), 
+                      pch=21, col="black", bg = "grey70",
+                      cex.axis = 2, cex.lab = 2, font.lab = 2, font = 2) 
+box(lwd=2.2)
+#dev.off()
+```
+Figure 3: Root mean square error of prediction (RMSEP) as a function of model component number in PLSR models. The dotted black vertical line is the number of components that has the lowest RMSEP. The vertical long-dashed blue line indicates the suggested number of components. The points and error bars are the means and standard errors of RMSEP in the cross validation, respectively. 
+
+3. Evaluate model performance  
+ 
+```{r model metrics, echo = F}
+plsr.out <- plsr(N~Spectra, scale=FALSE, ncomp = nComps,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data)
+fit <- plsr.out$fitted.values[,,nComps]
+#calibration
+cal.plsr.output <- data.frame(N = cal.plsr.data$N,
+                              PLSR_Predicted=fit,
+                              PLSR_CV_Predicted=as.vector(plsr.out$validation$pred[,,nComps]))
+cal.plsr.output <- cal.plsr.output %>%
+  mutate(PLSR_CV_Residuals = PLSR_CV_Predicted-N)
+#head(cal.plsr.output)
+cal.R2 <- round(pls::R2(plsr.out,intercept=F)[[1]][nComps],3) #intercept = F, estimates for a model with zero component does not need to be returned
+cal.RMSEP <- round(sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2)),3)
+cal_N_range <- (max(cal.plsr.output$N)-min(cal.plsr.output$N))
+cal.NRMSEP <-  round((sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2))/cal_N_range)*100,3)
+
+val.plsr.output <- data.frame(N = val.plsr.data$N,
+                              PLSR_Predicted=as.vector(predict(plsr.out, 
+                                                               newdata = val.plsr.data, 
+                                                               ncomp=nComps, 
+                                                               type="response")[,,]))
+val.plsr.output <- val.plsr.output %>%
+  mutate(PLSR_Residuals = PLSR_Predicted-N)
+
+val.R2 <- round(pls::R2(plsr.out,newdata=val.plsr.data,intercept=F)[[1]][nComps],3)
+val.RMSEP <- round(sqrt(mean(val.plsr.output$PLSR_Residuals^2)),3)
+val_N_range <- (max(val.plsr.output$N)-min(val.plsr.output$N))
+val.NRMSEP <- round((sqrt(mean(val.plsr.output$PLSR_Residuals^2))/val_N_range)*100,3)
+```
+
+```{r cal scatter, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+rng <- range(cal.plsr.output$N, cal.plsr.output$PLSR_CV_Predicted,
+             val.plsr.output$N, val.plsr.output$PLSR_Predicted)
+text_xloc <- seq(round(rng[1]), round(rng[2]), length = 5)[4]
+text_y_R2 <- (round(rng[2])-round(rng[1]))/10*4+round(rng[1])
+text_y_RMSEP <- (round(rng[2])-round(rng[1]))/10*3+round(rng[1])
+text_y_NRMSEP <- (round(rng[2])-round(rng[1]))/10*2+round(rng[1])
+
+cal_scatter_plot <- ggplot(cal.plsr.output, aes(x=N, y=PLSR_CV_Predicted)) + 
+  theme_bw() + geom_point() + 
+  geom_abline(intercept = 0, slope = 1, color="dark grey", linetype="dashed", size=1.5) + 
+  geom_smooth(method = "lm", formula = y ~ x, se = F) +
+  scale_x_continuous(breaks = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     labels = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     limits = c(rng[1], rng[2]))+
+  scale_y_continuous(breaks = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     labels = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     limits = c(rng[1], rng[2]))+
+  labs(x="\n Measured: Nitrogen (%)",
+       y="Predicted: Nitrogen (%)") +
+  theme(axis.text=element_text(size=25, face = "bold"), legend.position="none",
+        axis.title=element_text(size=25, face = "bold"), 
+        axis.text.x = element_text(angle = 0,vjust = 0.5)) + 
+ annotate("text", size = 8 , x= text_xloc, y = c(text_y_R2, text_y_RMSEP), parse = TRUE, 
+           label = c(paste("R^{2} == ", round(cal.R2, 2)), paste("RMSEP ==", round(cal.RMSEP, 2)))) +
+  annotate("text", size = 8 , x= text_xloc, y = text_y_NRMSEP, label = "%RMSEP = 13.15") +
+  annotate("text", x = 2, y = 3.75, parse = T, label = "Cal. (italic(n) == 70)", size = 8)
+```
+
+```{r export cal scatter, echo=FALSE, eval = F, fig.width=5, fig.height=5, fig.align='center'}  
+cal_scatter_plot
+ggsave(filename = paste0(file_path, "Nitrogen_Cal_lm_Scatterplot.png"), plot = cal_scatter_plot, device="png", width = 15, height = 15, units = "cm", dpi = 400)
+```
+
+```{r cal resid, echo=FALSE, fig.width=5, fig.height=5, fig.align='center'}
+cal_resid <- ggplot(cal.plsr.output, aes(x = N, y = PLSR_CV_Residuals)) +
+  geom_point() + 
+  geom_hline(yintercept = 0, color="black", 
+             linetype="dashed", size=1) + 
+  theme_bw(base_size = 18) +
+ labs(title = "Cal. (n = 70)", x = "\n Measured: Nitrogen (%)", y = "CV residuals")
+```
+
+```{r export cal resid, echo = F, eval = F, fig.align='center', fig.width = 5, fig.height = 5}
+cal_resid
+ggsave(filename = paste0(file_path, "Nitrogen_Cal_Residuals.png"), plot = cal_resid, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+```
+
+```{r val scatter, echo = F, fig.align='center', fig.width = 5, fig.height = 5}
+val_scatter_plot <- ggplot(val.plsr.output, aes(x=N, y=PLSR_Predicted)) + 
+  theme_bw() + geom_point() + 
+  geom_abline(intercept = 0, slope = 1, color="dark grey", linetype="dashed", size=1.5) + 
+  geom_smooth(method = "lm", formula = y ~ x, se = F) +
+  scale_x_continuous(breaks = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     labels = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     limits = c(rng[1], rng[2]))+
+  scale_y_continuous(breaks = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     labels = seq(round(rng[1]), round(rng[2]), length = 5), 
+                     limits = c(rng[1], rng[2]))+
+  labs(x="\n Measured: Nitrogen (%)",
+       y="Predicted: Nitrogen (%)") +
+  theme(axis.text=element_text(size=25, face = "bold"), legend.position="none",
+        axis.title=element_text(size=25, face = "bold"), 
+        axis.text.x = element_text(angle = 0,vjust = 0.5))+
+   annotate("text", size = 8 , x= text_xloc, y = c(text_y_R2, text_y_RMSEP), parse = TRUE, label = c(paste("R^{2} == ", round(val.R2, 2)), paste("RMSEP ==", round(val.RMSEP, 2)))) +
+   annotate("text", size = 8 , x= text_xloc, y = text_y_NRMSEP, label = "%RMSEP = 12.63") +
+   annotate("text", x = 2, y = 3.75, parse = T, label = "Val. (italic(n) == 18)", size = 8 )
+```
+
+```{r export val scatter, echo=FALSE, eval = F, fig.width=5, fig.height=5, fig.align='center'}  
+val_scatter_plot
+ggsave(filename = paste0(file_path, "Nitrogen_Val_lm_Scatterplot.png"), plot = val_scatter_plot, device="png", width = 15, height = 15, units = "cm", dpi = 400)
+```
+
+```{r val resid, echo = F, fig.align='center', fig.width = 5, fig.height = 5}
+val_resid <- ggplot(val.plsr.output, aes(x = N, y=PLSR_Residuals)) +
+  geom_point() + 
+  geom_hline(yintercept = 0, color="black", 
+             linetype="dashed", size=1) + theme_bw(base_size = 18) + 
+  labs(title = "Val. (n = 18)", x = "\n Measured: Nitrogen (%)", y = "Residuals")
+```
+
+```{r export val resid, echo = F, eval = F, fig.align='center', fig.width = 5, fig.height = 5}
+val_resid
+ggsave(filename = paste0(file_path, "Nitrogen_Val_Residuals.png"), plot = val_resid, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+```
+
+```{r scatterplots,  echo = F, fig.align='center', fig.width = 12, fig.height = 6}
+scatterplots <- grid.arrange(cal_scatter_plot, val_scatter_plot, ncol = 2)
+```
+Figure 4: Cross-validated values versus measured values (left, *n* = 70) and external validation values versus measured values (right, *n* = 18) of N (%)
+```{r resid plots, echo = F, fig.align='center', fig.width = 8, fig.height = 4}
+residsplots <-  grid.arrange(cal_resid, val_resid, ncol=2)
+```
+Figure 5: Residuals from the cross-validated values versus measured values (left, *n* = 70) and residuals from the external validation values versus measured values (right, *n* = 18) of N (%)  
+```{r Jackknife validation, echo=FALSE}
+if(grepl("Windows", sessionInfo()$running)){
+  pls.options(parallel =NULL)
+} else {
+  pls.options(parallel = parallel::detectCores()-1)
+}
+
+seg <- 7
+jk.plsr.out <- pls::plsr(as.formula(paste(inVar,"~","Spectra")), scale=FALSE, 
+                         center=TRUE, ncomp=nComps, 
+                         validation="CV", segments = seg, 
+                         segment.type="interleaved", trace=FALSE, 
+                         jackknife=TRUE, data=cal.plsr.data)
+pls.options(parallel = NULL)
+
+Jackknife_coef <- spectratrait::f.coef.valid(plsr.out = jk.plsr.out, data_plsr = cal.plsr.data, 
+                               ncomp = nComps, inVar=inVar)
+Jackknife_intercept <- Jackknife_coef[1,,,]
+Jackknife_coef <- Jackknife_coef[2:dim(Jackknife_coef)[1],,,]
+
+interval <- c(0.025,0.975)
+Jackknife_Pred <- val.plsr.data$Spectra %*% Jackknife_coef + 
+  matrix(rep(Jackknife_intercept, length(val.plsr.data[,inVar])), byrow=TRUE, 
+         ncol=length(Jackknife_intercept))
+Interval_Conf <- apply(X = Jackknife_Pred,MARGIN = 1,
+                       FUN = quantile,probs=c(interval[1],interval[2]))
+sd_mean <- apply(X = Jackknife_Pred,MARGIN = 1,FUN =sd)
+sd_res <- sd(val.plsr.output$PLSR_Residuals)
+sd_tot <- sqrt(sd_mean^2+sd_res^2)
+val.plsr.output$LCI <- Interval_Conf[1,]
+val.plsr.output$UCI <- Interval_Conf[2,]
+val.plsr.output$LPI <- val.plsr.output$PLSR_Predicted-1.96*sd_tot
+val.plsr.output$UPI <- val.plsr.output$PLSR_Predicted+1.96*sd_tot
+#head(val.plsr.output)
+```
+
+```{r valid pred intervals, Jackknife validation plot, echo=FALSE, fig.align='center', fig.height=12, fig.width=12}
+val.plsr.output$Treatment <- val.plsr.data$Treatment
+val.plsr.output.N1 <- val.plsr.output %>%
+  filter(val.plsr.output$Treatment == "N1")
+val.plsr.output.N2 <- val.plsr.output %>%
+  filter(val.plsr.output$Treatment == "N2")
+expr <- vector("expression", 3)
+expr[[1]] <- bquote(R^2==.(val.R2))
+expr[[2]] <- bquote(RMSEP==.(val.RMSEP))
+expr[[3]] <- bquote("%RMSEP"==.(val.NRMSEP))
+rng_vals <- c(min(val.plsr.output$LPI), max(val.plsr.output$UPI))
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0)) 
+plotrix::plotCI(val.plsr.output.N1[,"N"], val.plsr.output.N1$PLSR_Predicted, 
+       li=val.plsr.output.N1$LPI, ui=val.plsr.output.N1$UPI, gap=0.009,sfrac=0.004, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       err="y", pch=21, col="black", pt.bg="olivedrab4", scol="olivedrab3",
+       cex=2,ylab=paste0("Predicted ", paste(inVar), " (%)"),
+       xlab=paste0("Measured ", paste(inVar), " (%)"),
+       cex.axis=2, cex.lab = 3, font.lab = 2, font = 2)
+plotrix::plotCI(val.plsr.output.N2[,"N"], val.plsr.output.N2$PLSR_Predicted, add = T,
+       li=val.plsr.output.N2$LPI, ui=val.plsr.output.N2$UPI, gap=0.009,sfrac=0.004, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       err="y", pch=21, col="black", pt.bg="orange3", scol="orange2", cex=2)
+abline(0,1,lty=2,lw=2)
+legend(rng_vals[1], rng_vals[2], legend=expr, bty="n", cex=2, y.intersp = 1.5)
+legend("bottomright", inset = c(0.1,0.1), legend = c("N1", "N2"), pch=21 , pt.bg = c("olivedrab4", "orange3"),
+       col = "black", cex=2, pt.cex = 2, text.col = "black", y.intersp = 1.5, bty = "n")
+box(lwd=2.2)
+dev.copy(png, file.path(paste0(file_path, "N_model_performance.png")), height=2800, width=3200, res=340)
+dev.off()
+
+```
+
+```{r cal plot with aesthetic from model performance plot, echo=FALSE, fig.align='center', fig.height=12, fig.width=12}
+expr.cal <- vector("expression", 3)
+expr.cal[[1]] <- bquote(R^2==.(cal.R2))
+expr.cal[[2]] <- bquote(RMSEP==.(cal.RMSEP))
+expr.cal[[3]] <- bquote("%RMSEP"==.(cal.NRMSEP))
+cal.plsr.output$Treatment <- cal.plsr.data$Treatment
+
+cal.plsr.output.N1 <- cal.plsr.output %>%
+  filter(cal.plsr.output$Treatment == "N1")
+cal.plsr.output.N2 <- cal.plsr.output %>%
+  filter(cal.plsr.output$Treatment == "N2")
+
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0))
+plot(cal.plsr.output.N1[,"N"], cal.plsr.output.N1$PLSR_CV_Predicted, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       pch=21, col="black", bg = "olivedrab4",
+       cex=2, ylab=paste0("Predicted ", paste(inVar), " (%)"),
+       xlab=paste0("Measured ", paste(inVar), " (%)"),
+       cex.axis=2, cex.lab = 3, font.lab = 2, font = 2)
+points(cal.plsr.output.N2[,"N"], cal.plsr.output.N2$PLSR_CV_Predicted,
+       pch=21, col="black", bg = "orange3", cex=2)
+abline(0,1,lty=2,lw=2)
+legend(rng_vals[1], rng_vals[2], legend=expr.cal, bty="n", cex=2, y.intersp = 1.5)
+box(lwd=2.2)
+dev.copy(png, file.path(paste0(file_path, "N_Cal_aes_w_model_performance.png")), height=2800, width=3200, res=340)
+dev.off()
+
+```

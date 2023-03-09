@@ -1,0 +1,362 @@
+---
+title: "Predict final biomass from hyperspectral data"
+date: "`r Sys.Date ()`"
+output:
+  pdf_document: default
+---
+
+```{r, setup, include=FALSE, cache = F}
+knitr::opts_chunk$set(echo = T)
+knitr::opts_knit$set(root.dir = '/Users/ting15/Dropbox/Ting_Wang/rice_imaging_ms')
+#knitr::opts_knit$set(root.dir = 'C:/Users/rebec/Dropbox/Ting_Wang/rice_imaging_ms')
+```
+
+```{r, echo = F, include=FALSE}
+rm(list = ls())
+## Load package 
+list.of.packages <- c("dplyr", "reshape2", "ggplot2", "pls", "scales", "kableExtra", "ggpubr", "gridExtra", "CORElearn", "spectratrait")
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+# Methods  
+
+1. Used RReliefFexpRank algorithm to select wavelengths which had the top 300 attributes values for PLSR modeling. These wavelengths were referred to as $W_{PLSR}$.    
+2. Built a PLSR model with $W_{PLSR}$ as input and final biomass (g) as output. Methods were adapted from Burnett et al. (2021).  
+
+```{r, include=FALSE}
+## Load datasets  
+#HSI: Weekly ID-based data
+phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
+ref_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W13.csv', header = T, sep = ',', dec = '.')
+inVar <- "FB"
+file_path <- "./results/reliefF_plsr/final_biomass/"
+```
+
+```{r, echo=FALSE, fig.align='center', fig.width = 4, fig.height = 4}
+trait <- phyraw %>%
+  select("ID", all_of(inVar), "Treatment") %>%
+  na.omit() 
+#table(trait$Treatment)
+```
+
+## Step 1: Feature selection  
+
+```{r, echo=FALSE, fig.align='center', fig.width = 10, fig.height = 4}
+ref <- ref_meta[which(ref_meta$ID %in% trait$ID), -c(746:766)] #drop columns with wv > 2500 and meta data 
+
+ref_trait <- merge(ref, subset(trait, select = -Treatment), by = "ID")
+ref_trait_num <- ref_trait[ ,-1] # drop ID
+
+ref_trait_expRank <- attrEval(FB ~., ref_trait_num, estimator = "RReliefFexpRank", ReliefIterations = nrow(trait)*50) 
+ref_trait_expRank_long <- data.frame(value = unname(ref_trait_expRank), 
+                                       wv = as.numeric(gsub("_", ".", sub("...", "",  names(ref_trait_expRank)))))
+critical_value <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[300], 1]
+ref_trait_expRank_long$select <- ifelse(ref_trait_expRank_long$value >= critical_value, "Y", "N")
+ref_trait_expRank_order <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T)[1:300], ]
+
+ref_trait_expRank_export <- ref_trait_expRank_long[order(ref_trait_expRank_long$value, decreasing = T), ] 
+
+col_attr <- c("Y"="red", "N"="darkgray")
+FB_feature_plot <- ggplot() +
+  geom_line(aes(x = wv, y = value), data = ref_trait_expRank_long, col = "black", size = 0.5) +
+  scale_x_continuous(breaks = seq(400, 2500, by = 400), labels = seq(400, 2500, by = 400)) +
+  scale_y_continuous(breaks = seq(-0.1, 0.2, by = 0.1), labels = seq(-0.1, 0.2, by = 0.1),
+                     limits = c(-0.13, 0.23)) +
+  geom_point(aes(x = wv, y = value, col = select), data = ref_trait_expRank_long, size = .7,
+             show.legend = F) +
+  scale_color_manual(values=col_attr) +
+  labs(x= "Wavelength (nm)", y = "Attributes values") +                     
+  theme_bw() +
+  theme(
+    axis.title = element_text(size = 25, face = "bold"),
+    axis.text = element_text(size = 25, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+        )
+FB_feature_plot
+```
+
+```{r, echo=FALSE, eval=FALSE}
+ggsave(filename = paste0(file_path, "final_biomass_expRank_no_h_line.png"), plot = wv_trait_expRank_plot, 
+device="png", width = 30, height = 12, units = "cm", dpi = 400)
+```
+Figure 1: Attributes values of HSI data on Week 13 for final biomass (g). Wavelengths with the top 300 attribute values are considered as important (red, $W_{PLSR}$) and are used for model input. 
+
+## Step 2: plsr  
+
+Method for pls: Orthogonal scores PLSR 
+
+```{r plsr setting, include=FALSE}
+`%notin%` <- Negate(`%in%`)
+pls::pls.options(plsralg = "oscorespls")
+pls::pls.options("plsralg")
+opar <- par(no.readonly = T)
+```
+1. Prepared calibration and validation datasets  
+The data were first grouped by treatment. Then, 80% of the data were sampled for the calibration dataset. 
+```{r, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
+ref_select <- as.matrix(ref[ ,names(ref_trait_expRank[ref_trait_expRank >= critical_value])])
+plsr_data <- data.frame(trait, Spectra = I(ref_select))
+set.seed(14)
+prop <- 0.8
+group_variables <- c("Treatment")
+cal.plsr.data <- plsr_data %>% 
+        group_by_at(vars(all_of(group_variables))) %>%
+        slice(sample(1:n(), prop*n())) %>% 
+        data.frame()
+val.plsr.data <- plsr_data[!plsr_data$ID %in% cal.plsr.data$ID,]
+print(paste("Cal observations: ",dim(cal.plsr.data)[1],sep="")) #74
+print(paste("Val observations: ",dim(val.plsr.data)[1],sep="")) #20
+
+cal_hist_plot <- qplot(cal.plsr.data$FB, geom="histogram", binwidth =25,
+                       main = "Cal. (n = 74)",
+                       xlab = "Final biomass (g)", ylab = "Count", 
+                       fill=I("#0072B2"), col=I("black")) + theme_bw(base_size = 18)
+val_hist_plot <- qplot(val.plsr.data$FB, geom="histogram", binwidth =21,
+                       main = "Val. (n = 20)",
+                       xlab = "Final biomass (g)", ylab = "Count", 
+                       fill=I("#0072B2"),col=I("black")) + theme_bw(base_size = 18)
+cal_val_histograms <- grid.arrange(cal_hist_plot, val_hist_plot, ncol=2)
+```
+Figure 3: Frequency distributions of final biomass (g) in the calibration (left, *n* = 74) and validation (right, *n* = 20) datasets.  
+```{r, echo=FALSE, eval=FALSE, fig.align='center', fig.width = 5, fig.height = 5 }
+cal_hist_plot
+ggsave(filename = paste0(file_path, "cal_fb_histogram.png"), plot = cal_hist_plot, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+val_hist_plot
+ggsave(filename = paste0(file_path, "val_fb_histogram.png"), plot = val_hist_plot, device="png", width = 12, height = 12, units = "cm", dpi = 300)
+#ggsave(filename = paste0(file_path, "cal_val_final_biomass_histograms.png"), plot = cal_val_histograms, device="png", width = 30, height = 12, units = "cm", dpi = 300)
+#write.csv(x = cal.plsr.data, file= paste0(file_path, "final_biomass_Cal_PLSR_Dataset.csv"), row.names=FALSE)
+#write.csv(x = val.plsr.data, file= paste0(file_path, "final_biomass_Val_PLSR_Dataset.csv"), row.names=FALSE)
+
+```
+ 
+2. Fitted a plsr model  
+
+```{r determine number of components, echo = F, fig.align='center', fig.width = 7, fig.height = 5}
+plsr.ini <- plsr(FB~Spectra, scale=FALSE,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data)
+min_selectNcomp <- function(object,
+                        method = c("randomization", "onesigma"),
+                        nperm = 999, alpha = 0.01, ncomp = object$ncomp,
+                        plot = FALSE, ...) {
+    if (!isTRUE(object$validation$method == "CV"))
+        stop("No cross-validation data available in model")
+    ## check that Y is univariate
+    if (dim(residuals(object))[2] > 1)
+        stop("Only univariate response supported")
+
+    rmseps <- c(RMSEP(object, "CV")$val) ## includes zero
+    maxIdx <- ncomp + 1
+    absBest <- which.min(rmseps[seq_len(maxIdx)])
+
+    if (absBest > 0) {
+        method <- match.arg(method)
+        if (is.null(origResponse <- object$y))
+            origResponse <-
+                c(predict(object, ncomp = 1) + residuals(object)[,1,1])
+
+        ## include LOO prediction with zero components (i.e., the
+        ## mean). For the mean we should also use the LOO estimate...
+        allresids <- cbind(origResponse -
+                               (sum(origResponse) - origResponse) /
+                                   (length(origResponse) - 1),
+                           object$validation$pred[,1,] - origResponse)
+
+        if (method == "randomization") {
+            pvals <- sapply(seq_len(absBest - 1),
+                            function(ii) randomiz.test(allresids[,ii],
+                                                       allresids[,absBest],
+                                                       nperm = nperm))
+            idx <- which(pvals > alpha)
+            selection <- min(c(idx, absBest)) - 1
+        } else {
+            residsds <- apply(allresids, 2, sd) / sqrt(nrow(allresids)) #se of the residuals
+            uls <- rmseps - residsds
+            selection <- absBest - 1
+        }
+
+        if (isTRUE(plot)) {
+            xvals <- seq_along(rmseps) - 1
+            plot(xvals, rmseps, ylab = "RMSEP",
+                 xlab = "Number of components", type = "b", ...)
+            if (method == "onesigma") {
+                arrows(xvals, uls, xvals, rmseps + residsds,
+                       code = 3, col = "gray", angle = 90, length = .1)
+            } else {
+                points(xvals[idx], rmseps[idx], cex = 2, col = 4)
+            }
+            abline(h = rmseps[absBest], col = "gray", lty = 3)
+            abline(v = absBest - 1, col = "blue", lty = 3)
+        }
+
+        selection
+    } else {
+        warning("Lowest CV error found at 0 components, no testing performed")
+        0
+    }
+}
+
+
+#png(filename = paste0(file_path, "Nitrogen_nComps.png"), bg = "white", width = 7, height = 5, units = "in", res = 400)
+par(mfrow=c(1,1), mar=c(6,7,1,0.5), oma=c(0, 0.1, 0, 0.2), mgp = c(3, 1, 0))
+nComps <- min_selectNcomp(plsr.ini, method = "onesigma", plot = T, lwd=1.6,
+                      xlim = c(0, 15), 
+                      pch=21, col="black", bg = "grey70",
+                      cex.axis = 2, cex.lab = 2, font.lab = 2, font = 2) 
+box(lwd=2.2)
+#dev.off()
+```
+Figure 3: Root mean square error of prediction (RMSEP) as a function of model component number in PLSR models. The vertical long-dashed blue line indicates the suggested number of components (twelve). RMSEP is derived from leave-one-out cross validation and error bars are the standard error of the cross-validation residuals.    
+
+3. Calculated model performance metrics    
+```{r model metrics, echo = F}
+plsr.out <- plsr(FB~Spectra, scale=FALSE, ncomp = nComps,
+                 validation="LOO",trace=FALSE,data=cal.plsr.data, jackknife=TRUE)
+fit <- plsr.out$fitted.values[,,nComps]
+
+cal.plsr.output <- data.frame(FB = cal.plsr.data$FB,
+                              Treatment = cal.plsr.data$Treatment,
+                              PLSR_Predicted=fit,
+                              PLSR_CV_Predicted=as.vector(plsr.out$validation$pred[,,nComps]))
+cal.plsr.output <- cal.plsr.output %>%
+  mutate(PLSR_CV_Residuals = PLSR_CV_Predicted-FB)
+
+cal.R2 <- round(pls::R2(plsr.out,intercept=F)[[1]][nComps],3) #intercept = F, estimates for a model with zero component does not need to be returned
+cal.RMSEP <- round(sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2)),3)
+cal_FB_range <- (max(cal.plsr.output$FB)-min(cal.plsr.output$FB))
+cal.NRMSEP <-  round((sqrt(mean(cal.plsr.output$PLSR_CV_Residuals^2))/cal_FB_range)*100,3)
+
+val.plsr.output <- data.frame(FB = val.plsr.data$FB,
+                              Treatment = val.plsr.data$Treatment,
+                              PLSR_Predicted=as.vector(predict(plsr.out, 
+                                                               newdata = val.plsr.data, 
+                                                               ncomp=nComps, 
+                                                               type="response")[,,]))
+val.plsr.output <- val.plsr.output %>%
+  mutate(PLSR_Residuals = PLSR_Predicted-FB)
+
+val.R2 <- round(pls::R2(plsr.out,newdata=val.plsr.data,intercept=F)[[1]][nComps],3)
+val.RMSEP <- round(sqrt(mean(val.plsr.output$PLSR_Residuals^2)),3)
+val_FB_range <- (max(val.plsr.output$FB)-min(val.plsr.output$FB))
+val.NRMSEP <- round((sqrt(mean(val.plsr.output$PLSR_Residuals^2))/val_FB_range)*100,3)
+```
+
+\newpage  
+
+4. Plotted the results    
+
+```{r withdraw coefficients from Jackknife permutation, echo=FALSE}
+Jackknife_coef <- spectratrait::f.coef.valid(plsr.out = plsr.out, data_plsr = cal.plsr.data, 
+                               ncomp = nComps, inVar=inVar)
+Jackknife_intercept <- Jackknife_coef[1,,,]
+Jackknife_coef <- Jackknife_coef[2:dim(Jackknife_coef)[1],,,]
+
+interval <- c(0.025,0.975)
+Jackknife_Pred <- val.plsr.data$Spectra %*% Jackknife_coef + 
+  matrix(rep(Jackknife_intercept, length(val.plsr.data[,inVar])), byrow=TRUE, 
+         ncol=length(Jackknife_intercept))
+Interval_Conf <- apply(X = Jackknife_Pred,MARGIN = 1,
+                       FUN = quantile,probs=c(interval[1],interval[2]))
+sd_mean <- apply(X = Jackknife_Pred,MARGIN = 1,FUN =sd)
+sd_res <- sd(val.plsr.output$PLSR_Residuals)
+sd_tot <- sqrt(sd_mean^2+sd_res^2)
+val.plsr.output$LCI <- Interval_Conf[1,]
+val.plsr.output$UCI <- Interval_Conf[2,]
+val.plsr.output$LPI <- val.plsr.output$PLSR_Predicted-1.96*sd_tot
+val.plsr.output$UPI <- val.plsr.output$PLSR_Predicted+1.96*sd_tot
+
+rng_vals <- c(min(val.plsr.output$LCI), max(val.plsr.output$UCI))
+tCol <- c("black", "white")
+```
+
+```{r measured vs CV predicted in calibration dataset, echo=FALSE, messages = F, fig.align='center', fig.height=12, fig.width=12}
+cal.plsr.output.N1 <- cal.plsr.output %>%
+  filter(cal.plsr.output$Treatment == "N1")
+cal.plsr.output.N2 <- cal.plsr.output %>%
+  filter(cal.plsr.output$Treatment == "N2")
+
+expr.cal <- vector("expression", 3)
+expr.cal[[1]] <- bquote(R^2==.(cal.R2))
+expr.cal[[2]] <- bquote(RMSEP==.(cal.RMSEP))
+expr.cal[[3]] <- bquote("%RMSEP"==.(cal.NRMSEP))
+
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0))
+plot(cal.plsr.output.N1$PLSR_CV_Predicted, cal.plsr.output.N1[,"FB"], 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       pch=21, col="black", bg = tCol[1], cex=2, 
+       xlab=paste0("CV Predicted ", paste(inVar), " (g)"),
+       ylab=paste0("Measured ", paste(inVar), " (g)"),
+       cex.axis=3, cex.lab = 3, font.lab = 2, font = 2)
+points(cal.plsr.output.N2$PLSR_CV_Predicted, cal.plsr.output.N2[,"FB"], 
+       pch=21, col="black", bg = tCol[2], cex=2)
+abline(0,1,lty=2,lw=2)
+legend(rng_vals[1], rng_vals[2], legend=expr.cal, bty="n", cex=2, y.intersp = 1.5)
+box(lwd=2.2)
+#dev.copy(png, file.path(paste0(file_path, "N_Cal_model.png")), height=2800, width=3200, res=340)
+#dev.off()
+```
+Figure 4: Measured values  versus cross-validation values in calibration dataset (*n* = 74) of FB (g).   
+```{r residuals vs CV predicted in calibration dataset, echo=FALSE, messages = F, fig.align='center', fig.height=12, fig.width=12}
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0))
+plot(cal.plsr.output.N1$PLSR_CV_Predicted, cal.plsr.output.N1$PLSR_CV_Residuals, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), 
+       pch=21, col="black", bg = tCol[1], cex=2, 
+       xlab=paste0("CV Predicted ", paste(inVar), " (g)"),
+       ylab=paste0("Residuals"),
+       cex.axis=3, cex.lab = 3, font.lab = 2, font = 2)
+points(cal.plsr.output.N2$PLSR_CV_Predicted, cal.plsr.output.N2$PLSR_CV_Residuals, 
+       pch=21, col="black", bg = tCol[2], cex=2)
+abline(h=0,lty=2,lw=2)
+box(lwd=2.2)
+#dev.copy(png, file.path(paste0(file_path, "N_cal_resi.png")), height=2800, width=3200, res=340)
+#dev.off()
+
+```
+Figure 5: Residuals from the cross validation values versus cross validation predicted values (*n* = 74) of FB (g)  
+```{r measured vs pred with 95CI in validation dataset, echo=FALSE, messages = F, fig.align='center', fig.height=12, fig.width=12}
+val.plsr.output.N1 <- val.plsr.output %>%
+  filter(val.plsr.output$Treatment == "N1")
+val.plsr.output.N2 <- val.plsr.output %>%
+  filter(val.plsr.output$Treatment == "N2")
+expr <- vector("expression", 3)
+expr[[1]] <- bquote(R^2==.(val.R2))
+expr[[2]] <- bquote(RMSEP==.(val.RMSEP))
+expr[[3]] <- bquote("%RMSEP"==.(val.NRMSEP))
+rng_vals <- c(min(val.plsr.output$LCI), max(val.plsr.output$UCI))
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0)) 
+plotrix::plotCI(val.plsr.output.N1$PLSR_Predicted, val.plsr.output.N1[,"FB"], 
+       li=val.plsr.output.N1$LCI, ui=val.plsr.output.N1$UCI, gap=0,sfrac=0.007, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       err="x", pch=21, col="black", pt.bg=tCol[1], scol="black", cex=2,
+       xlab=paste0("Predicted ", paste(inVar), " (g)"),
+       ylab=paste0("Measured ", paste(inVar), " (g)"),
+       cex.axis=3, cex.lab = 3, font.lab = 2, font = 2)
+plotrix::plotCI(val.plsr.output.N2$PLSR_Predicted, val.plsr.output.N2[,"FB"], add = T,
+       li=val.plsr.output.N2$LCI, ui=val.plsr.output.N2$UCI, gap=0,sfrac=0.007, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), ylim=c(rng_vals[1], rng_vals[2]), 
+       err="x", pch=21, col="black", pt.bg=tCol[2], scol="black", cex=2)
+abline(0,1,lty=2,lw=2)
+legend(rng_vals[1], rng_vals[2], legend=expr, bty="n", cex=2, y.intersp = 1.5)
+legend("bottomright", inset = c(0.1,0.1), legend = c("N1", "N2"), pch=21 , pt.bg = tCol,
+       col = "black", cex=2, pt.cex = 2, text.col = "black", y.intersp = 1.5, bty = "n")
+box(lwd=2.2)
+#dev.copy(png, file.path(paste0(file_path, "N_val_model_with_95CI.png")), height=2800, width=3200, res=340)
+#dev.off()
+```
+Figure 6: Measured values versus prediction in validation dataset (*n* = 20) of FB (g). Error bars represent 95%CIs.  
+```{r residuals vs predicted in validation dataset, echo=FALSE, messages = F, fig.align='center', fig.height=12, fig.width=12}
+par(mfrow=c(1,1), mar=c(6, 7, 1, 0.4), oma=c(0, 0.1, 0, 0.2), mgp = c(5, 2, 0))
+plot(val.plsr.output.N1$PLSR_Predicted, val.plsr.output.N1$PLSR_Residuals, 
+       lwd=1.6, xlim=c(rng_vals[1], rng_vals[2]), 
+       pch=21, col="black", bg = tCol[1], cex=2, 
+       xlab=paste0("Predicted ", paste(inVar), " (g)"),
+       ylab=paste0("Residuals"),
+       cex.axis=3, cex.lab = 3, font.lab = 2, font = 2)
+points(val.plsr.output.N2$PLSR_Predicted, val.plsr.output.N2$PLSR_Residuals, 
+       pch=21, col="black", bg = tCol[2], cex=2)
+abline(h=0,lty=2,lw=2)
+box(lwd=2.2)
+#dev.copy(png, file.path(paste0(file_path, "N_val_resid_vs_pred.png")), height=2800, width=3200, res=340)
+#dev.off()
+
+```
+Figure 7: Residuals from the external validation values versus predicted values (*n* = 20) of FB (g)  
