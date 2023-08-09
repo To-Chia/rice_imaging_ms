@@ -2,7 +2,8 @@ These scripts are associated with the manuscript:
 
 Ting T, Souza A, Imel R. K., Guadagno C. R., Hoagland C., Yang Y., and Wang D. R. Quantifying physiological trait variation with automated hyperspectral imaging in rice. In revision, _Frontiers in Plant Science_ 
 
-Pipelines in each script are set up similarly with standard output of IDs of calibration and validation datasets, ground-reference trait distributions, selected wavelengths, number of components for PLSR models, results of model model calibration and validation and plots of residual. Every script (RMD file) is accompanied by a PDF file, except for traits that could not be developed with PLSR models (see above reference). Note that model metrics may vary due to random sampling. 
+Pipelines in each script are set up similarly with standard output of IDs of calibration and validation datasets, ground-reference trait distributions, selected wavelengths, number of components for PLSR models, results of model model calibration and validation and plots of residual. Every script (RMD file) is accompanied by a PDF file, except for traits that could not be developed with PLSR models (see above reference). Note that model metrics may vary due to random sampling and annotations of %RMSEP on plots were based on the time the authors ran the code.
+
 
 Ground-reference and HSI data may be retrieved at [ https://purr.purdue.edu/publications/4079/1 ]. The file names are explained below:
 
