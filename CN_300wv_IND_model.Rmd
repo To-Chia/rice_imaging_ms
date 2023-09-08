@@ -20,7 +20,7 @@ invisible(lapply(list.of.packages, library, character.only = TRUE))
 phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
 ref_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W9.csv', header = T, sep = ',', dec = '.')
 ref_meta = ref_meta[ ,-c(746:762)] # remove wv > 2500
-file_path <- "./results/reliefF_plsr/sideviewA/CN_IND_model"
+file_path <- "./results/RReliefF_plsr/sideviewA/CN_IND_model"
 ```
 
 ```{r select samples based on subpop, echo = F, fig.align='center', fig.width = 4, fig.height = 4}
@@ -64,7 +64,7 @@ strip_chart
 ``` 
 
 ```{r functions and settings, echo=FALSE}
-input_for_reliefF = function(X_IDdata, y_metadata, cal.ID, y_name, num_X_names){
+input_for_RReliefF = function(X_IDdata, y_metadata, cal.ID, y_name, num_X_names){
   y_cal = y_metadata[y_metadata$ID %in% cal.ID, ]
   X_cal = X_IDdata[X_IDdata$ID %in% cal.ID, ]
   
@@ -76,7 +76,7 @@ input_for_reliefF = function(X_IDdata, y_metadata, cal.ID, y_name, num_X_names){
   return(data)
 }
 
-reliefF_algorithm = function(pre_cal, # calibration data with full spectrum
+RReliefF_algorithm = function(pre_cal, # calibration data with full spectrum
                              y_name, num_X_names, 
                              estimator = "RReliefFexpRank", iterationtimes = 100){
     attr <- attrEval(y_name, pre_cal, estimator = estimator,
@@ -252,21 +252,21 @@ print(val.ID)
 ``` 
 
 ```{r feature selection, echo=FALSE}
-pre_cal = input_for_reliefF(X_IDdata = X_IDdata, y_metadata = y_metadata, 
+pre_cal = input_for_RReliefF(X_IDdata = X_IDdata, y_metadata = y_metadata, 
                             cal.ID = cal.ID, y_name = 'CN', 
                             num_X_names = num_X_names)
 
-reliefF = reliefF_algorithm(pre_cal = pre_cal, 
+RReliefF = RReliefF_algorithm(pre_cal = pre_cal, 
                                 y_name = 'CN', num_X_names = num_X_names)
 
-reliefF_star = reliefF[order(reliefF$value, decreasing = T)[1:300],]
-tail(reliefF_star)
+RReliefF_star = RReliefF[order(RReliefF$value, decreasing = T)[1:300],]
+tail(RReliefF_star)
 ```
 
 ```{r cal and val datasets, echo = F, fig.align='center', fig.width = 9, fig.height = 5}
 cal_val_list = cal_val_data_sets(cal.ID = cal.ID, val.ID = val.ID,
                                    X_IDdata = X_IDdata, y_metadata = y_metadata, 
-                                   X_attr = reliefF_star, 
+                                   X_attr = RReliefF_star, 
                                    y_name = 'CN', num_X_names = num_X_names,
                                    plot = T, y_unit = " ratio")
 
@@ -558,8 +558,8 @@ ggsave(filename = paste0(file_path, "/CN_IND_selected_wv.pdf"),
        plot = selected_wv, 
        device = "pdf", width = 7, height = 5, units = "cm", dpi = 400)
 
-write.csv(x=reliefF, 
-          file = paste0(file_path, "/CN_IND_reliefF_300.csv"), 
+write.csv(x=RReliefF, 
+          file = paste0(file_path, "/CN_IND_RReliefF_300.csv"), 
           row.names = F)
 write.csv(x=cal.plsr.output, 
           file = paste0(file_path, "/CN.IND.cal.plsr.output.csv"), 
