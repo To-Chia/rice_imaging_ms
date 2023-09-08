@@ -22,7 +22,7 @@ invisible(lapply(list.of.packages, library, character.only = TRUE))
 phyraw <- read.csv('./data/ground_truth/phyraw_forHSI_2022.csv', header = T, sep = ',', dec = '.')
 ref_meta <- read.csv('./data/hyperspectral_imaging/HSI_side_for_biotraits_mod_W6.csv', header = T, sep = ',', dec = '.')
 ref_meta = ref_meta[ ,-c(746:762)] # remove wv > 2500
-file_path <- "./results/reliefF_plsr/sideviewA/A_n_200_wv"
+file_path <- "./results/RReliefF_plsr/sideviewA/A_n_200_wv"
 ```
 
 ```{r functions and settings, echo=FALSE}
